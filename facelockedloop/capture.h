@@ -20,7 +20,7 @@ struct imager_params {
 
 #else
 struct imager_params {
-	char* name;
+	char *name];
 	int vididx;
 	int frameidx;
 	void* frame;
@@ -29,27 +29,15 @@ struct imager_params {
 
 #endif
 
-struct imager_stats {
-	int tally;
-	int fps;
-};
-
 struct imager {
 	struct stage step;
 	struct imager_params params;
-	struct imager_stats stats;
 	int status;
 };
 
 struct pipeline;
   
-int capture_initialize(struct imager *i, struct imager_params *p,
-		       struct pipeline *pipe);
-int capture_run(struct imager *i);
-void capture_teardown(struct imager *i);
-int capture_get_imgcount(struct imager *i);
-int capture_print_stats (struct imager *i);
-  
+int capture_initialize(struct imager *i, struct imager_params *p, struct pipeline *pipe);
 #ifdef __cplusplus
 }
 #endif

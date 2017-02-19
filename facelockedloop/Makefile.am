@@ -1,31 +1,4 @@
-bin_PROGRAMS = fll test-haar test-display test-BGR2GRAY
-
-test_display_SOURCES =	\
-	test-display.c
-
-test_display_CPPFLAGS = \
-	$(fll_CPPFLAGS)
-
-test_display_LDADD = \
-	$(fll_LDADD)
-
-test_haar_SOURCES =	\
-	test-haar.c
-
-test_haar_CPPFLAGS = \
-	$(fll_CPPFLAGS)
-
-test_haar_LDADD = \
-	$(fll_LDADD)
-
-test_BGR2GRAY_SOURCES =	\
-	test-haar.c
-
-test_BGR2GRAY_CPPFLAGS = \
-	$(fll_CPPFLAGS)
-
-test_BGR2GRAY_LDADD = \
-	$(fll_LDADD)
+bin_PROGRAMS = fll
 
 fll_SOURCES = \
 	main.c	\
@@ -51,11 +24,10 @@ fll_LDADD =		\
 	../servolib/libservolib.la \
 	-lpthread -lrt
 
-if USEOPENCV
-if HAVE_OPENCV2
-fll_CPPFLAGS +=  @opencvinc@ -DHAVE_OPENCV2 
+fll_CPPFLAGS +=  @opencvinc@ -DHAVE_OPENCV2
 fll_LDFLAGS +=  @opencvlib@
+fll_LDFLAGS += -lm
 fll_LDADD += @OPENCV_ADD_LDFLAG@
-endif
-endif
+fll_LDADD += -lm
+
 

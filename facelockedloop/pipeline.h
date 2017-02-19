@@ -8,16 +8,16 @@
 extern "C" {
 #endif
 
-#define PIPELINE_MAX_STAGE 3
-#define CAPTURE_STAGE 0
-#define DETECTION_STAGE 1
-#define TRACKING_STAGE 2
+
+#define CAPTURE_STAGE		0
+#define DETECTION_STAGE		1
+#define TRACKING_STAGE		2
+#define PIPELINE_MAX_STAGE	3
 
 struct pipeline;
 struct stage;
 
-
-#define STAGE_ABRT 0x1 /*abort received*/
+#define STAGE_ABRT		0x1
 	
 struct stage_params {
 	int nth_stage;
@@ -26,16 +26,14 @@ struct stage_params {
 };
 
 struct stage_ops {
-	void (*up)(struct stage *stg, struct stage_params *p,
-		  struct stage_ops *o, struct pipeline *pipe);
-	int (*run)(struct stage *stg);
-	void (*down)(struct stage *stg);
-	void (*go)(struct stage *stg);
-	void (*wait)(struct stage *stg);
+	void (*up)(struct stage *stg, struct stage_params *p, struct stage_ops *o, struct pipeline *pipe);
 	int (*output)(struct stage *stg, void *it);
 	int (*input)(struct stage *stg, void **it);
 	int (*count)(struct stage *step);
-	void (*printstats)(struct stage *step);
+	void (*down)(struct stage *stg);
+	void (*wait)(struct stage *stg);
+	int (*run)(struct stage *stg);
+	void (*go)(struct stage *stg);
 };
 
 struct stage {
@@ -51,16 +49,9 @@ struct stage {
 	sem_t nowait;
 	sem_t done;
 	int flags;
-	struct performance {
-		struct timespec lastrun;
-		struct timespec overall;
-		unsigned long ofinterest;
-		unsigned long persecond;
-	} stats;
 };
 
-void stage_up(struct stage *stg,  struct stage_params *p,
-	     struct stage_ops *o, struct pipeline *pipe);
+void stage_up(struct stage *stg,  struct stage_params *p,struct stage_ops *o, struct pipeline *pipe);
 void stage_down(struct stage *stg);	
 void stage_go(struct stage *stg);
 void stage_wait(struct stage *stg); 

@@ -14,21 +14,14 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <errno.h>
-
+#include "time_utils.h"
 #include "pipeline.h"
 #include "capture.h"
 #include "detect.h"
 #include "track.h"
-#include "time_utils.h"
-
-extern const char *fll_version_name;
-#define FLL_MAX_SERVO_COUNT SERVOLIB_MAX_SERVO_COUNT
-#define FLL_SERVO_COUNT 2
 
 static struct pipeline fllpipe;
 
-
-static int with_output;
 static const struct option options[] = {
 	{
 #define help_opt	0
@@ -37,90 +30,39 @@ static const struct option options[] = {
 		.flag = NULL,
 	},
 	{
-#define xmlfile_opt	1
-		.name = "xmlfile",
-		.has_arg = 1,
-		.flag = NULL,
-	},
-	{
-#define output_opt	2
-		.name = "output",
-		.has_arg = 2,
-		.flag = &with_output,
-		.val = 1,
-	},
-	{
-#define camera_opt      3
+#define camera_opt      1
 		.name = "video",
 		.has_arg = 1,
 		.flag = NULL,
 	},
 	{
-#define algrthm_opt 4
-		.name = "algorithm",
-		.has_arg = 1,
-		.flag = NULL,
-	},
-	{
-#define trackdev_opt 5
+#define trackdev_opt	2
 		.name = "servodev",
 		.has_arg = 1,
 		.flag = NULL,
 	},
 	{
-#define trackpan_opt   6
-		.name = "panchannel",
-		.has_arg = 1,
-		.flag = NULL,
-	},
-	{
-#define tracktilt_opt   7
-		.name = "tiltchannel",
-		.has_arg = 1,
-		.flag = NULL,
-	},
-	{
-#define nloops_opt 8
-		.name = "loops",
-		.has_arg = 1,
-		.flag = NULL,
-	},
-	{
-#define dmins_opt 9
+#define dmins_opt	3
 		.name = "min_s",
 		.has_arg = 1,
 		.flag = NULL,
 	},
 	{
-#define dmaxs_opt 10
+#define dmaxs_opt	4
 		.name = "max_s",
 		.has_arg = 1,
 		.flag = NULL,
 	},
 };
 
-static void usage(void)
+static
+void usage(void)
 {
 	fprintf(stderr, "usage: fll  <options>, with:                   \n");
-	fprintf(stderr, "            --xmlfile=<filepath/filename>   "
-		":specifies detector config file (default: ~/cascade.xml)\n");
-	fprintf(stderr, "            --output[=<file-tmpl>]          "
-		":dump output data (default: discard)                    \n");
 	fprintf(stderr, "            --video[=<camera-index>] 	     "
 		":specifies which camera to use (default: any camera)    \n");
-	fprintf(stderr, "            --algorithm[=<haar>|<lsvm>]     "
-		":select which detection algorithm to use (default: haar)\n");
 	fprintf(stderr, "            --servodevnode=<dev-node-index> "
 		":specifies the servos device control node (default: 0)  \n");
-	fprintf(stderr, "            --panchannel[=<channel-index>]  "
-		":specifies which channel the pan servo is connected to "
-		"(default: 2)\n");
-	fprintf(stderr, "            --tiltchannel[=<channel-index>] "
-		":specifies which channel the tilt servo is connected to "
-		"(default: 5)\n");
-	fprintf(stderr, "            --nloops=<n>                    "
-		":specifies number of pipeline iterations to run, if 0 run "
-		"forever (default: 0)\n");
 	fprintf(stderr, "            --min_s=<n>]                    "
 		":specifies min size for the detector (default: 80)     \n");
 	fprintf(stderr, "            --max_s=<n>]                    "
@@ -129,9 +71,8 @@ static void usage(void)
 		"this help\n");
 }
 
-
-/*helper function*/
-static void *signal_catch(void *arg)
+static
+void *signal_catch(void *arg)
 {
 	sigset_t *monitorset = arg;
 	int sig;
@@ -144,9 +85,9 @@ static void *signal_catch(void *arg)
 	}
 	return NULL;
 }
-
 	
-static void setup_term_signals(void)
+static
+void setup_term_signals(void)
 {
 	static sigset_t set;
 	pthread_attr_t attr;
@@ -166,35 +107,22 @@ static void setup_term_signals(void)
 
 int main(int argc, char *const argv[])
 {
-	char *outfile, *xmlfile;
-	int video = 0;
 	struct timespec start_time, stop_time, duration;
-	int pos[FLL_MAX_SERVO_COUNT] =
-		{ [0 ... FLL_MAX_SERVO_COUNT -1] = -1};
-	int speed[FLL_MAX_SERVO_COUNT] =
-		{ [0 ... FLL_MAX_SERVO_COUNT -1] = -1};
-	int accel[FLL_MAX_SERVO_COUNT] =
-		{ [0 ... FLL_MAX_SERVO_COUNT -1] = -1};
+	struct detector_params algorithm_params;
 	struct tracker_params servo_params;
 	struct imager_params camera_params;
-	struct detector_params algorithm_params;
-	struct imager camera;
 	struct detector algorithm;
 	struct tracker servo;
-	enum object_detector_t dtype = CDT_HAAR;
-	int lindex, c, i, l, ret, panchannel, tiltchannel, servodevnode, loops;
+	struct imager camera;
+	int lindex, c, ret, servodevnode;
 	int dmins, dmaxs;
-	char ch;
+	int video = -1;
+
+	/* default config options */
 	servodevnode = 0;
-	outfile = NULL;
-	xmlfile = "haarcascade_frontalface_default.xml";
-	panchannel = 1;
-	tiltchannel = 5;
-	loops = 0;
 	dmins = 100;
 	dmaxs = 180;
-	
-	/* get local configurations */
+
 	for (;;) {
 		lindex = -1;
 		c = getopt_long_only(argc, argv, "", options, &lindex);
@@ -204,30 +132,11 @@ int main(int argc, char *const argv[])
 		case help_opt:
 			usage();
 			exit(0);
-		case xmlfile_opt:
-			xmlfile = optarg;
-			break;
-		case output_opt:
-			outfile = optarg;
-			break;
 		case camera_opt:
 			video = atoi(optarg);
 			break;
-		case algrthm_opt:
-			if (optarg && strncmp(optarg, "lsvm",4) == 0)
-				dtype = CDT_LSVM;
-			break;
 		case trackdev_opt:
 			servodevnode = atoi(optarg);
-			break;
-		case trackpan_opt:
-			panchannel = atoi(optarg);
-			break;
-		case tracktilt_opt:
-			tiltchannel = atoi(optarg);
-			break;
-		case nloops_opt:
-			loops = atoi(optarg);
 			break;
 		case dmins_opt:
 			dmins = atoi(optarg);
@@ -240,34 +149,37 @@ int main(int argc, char *const argv[])
 			exit(1);
 		}
 	}
-	if (xmlfile != NULL)
-		printf("cascade filter:%s.\n", xmlfile);
-	if (outfile != NULL)
-		printf("output data:%s.\n", outfile);
 
+	if (video < 0)
+		video = 0;
+
+	setup_term_signals();
+
+	/* setup the vide pipeline */
 	pipeline_init(&fllpipe);
+
 	/* first stage */
 	ret = asprintf(&camera_params.name, "FLL cam%d", video);
 	if (ret < 0)
 		goto terminate;
-	
-	setup_term_signals();
 
+	camera_params.videocam = NULL;
 	camera_params.vididx = video;
 	camera_params.frame = NULL;
-	camera_params.videocam = NULL;
 	ret = capture_initialize(&camera, &camera_params, &fllpipe);
 	if (ret) {
 		printf("capture init ret:%d.\n", ret);
 		goto terminate;
 	}
+
 	/* second stage */
-	algorithm_params.odt = dtype;
-	algorithm_params.cascade_xml = xmlfile;
+	algorithm_params.cascade_xml = "haarcascade_frontalface_default.xml";
+	algorithm_params.scratchbuf = NULL;
+	algorithm_params.algorithm = NULL;
 	algorithm_params.srcframe = NULL;
 	algorithm_params.dstframe = NULL;
-	algorithm_params.algorithm = NULL;
-	algorithm_params.scratchbuf = NULL;
+	algorithm_params.odt = CDT_HAAR;
+
 	algorithm_params.min_size = dmins;
 	algorithm_params.max_size = dmaxs;
 	ret = detect_initialize(&algorithm, &algorithm_params, &fllpipe);
@@ -275,59 +187,47 @@ int main(int argc, char *const argv[])
 		printf("detection init ret:%d.\n", ret);
 		goto terminate;
 	}
-	/* third stage */
-	servo_params.pan_tgt = 0;
-	servo_params.tilt_tgt = 0;
-	servo_params.dev = servodevnode;
-	servo_params.pan_params.channel = panchannel;
-	servo_params.tilt_params.channel = tiltchannel;
 
+	/* third stage */
+	servo_params.tilt_params.channel = tilt_channel;
+	servo_params.pan_params.channel = pan_channel;
+	servo_params.dev = servodevnode;
+	servo_params.tilt_tgt = 0;
+	servo_params.pan_tgt = 0;
 	ret = track_initialize(&servo , &servo_params, &fllpipe);
 	if (ret) {
 		printf("tracking init ret:%d.\n", ret);
 		goto terminate;
 	}
 
-	ret =pipeline_getcount(&fllpipe);
+	ret = pipeline_getcount(&fllpipe);
 	if (ret != PIPELINE_MAX_STAGE) {
 		printf("missing stages for fll, only %d present.\n", ret);
 		goto terminate;
 	}
 
-	
-	for (i=0; i < FLL_MAX_SERVO_COUNT; i++)
-		printf("servo channel %d, pos:%d, speedLim:%d, accelLim:%d.\n",
-		       i, pos[i], speed[i], accel[i]);
-
+	/**
+	 * execute the video pipeline
+	 */
 	clock_gettime(CLOCK_MONOTONIC, &start_time);
-	for (l=0; ret >= 0; l++)  {
-		printf("loop:%d.\n", l);
+	for (;;)  {
 		ret = pipeline_run(&fllpipe);
 		if (ret) {
-			printf("Cannot run FLL, ret:%d.\n", ret);
+			printf("cannot run FLL, ret:%d.\n", ret);
 			break;
 		}
-#if 0		
-		ret = pipeline_pause(&fllpipe);
-		if (ret){
-			printf("Cannot pause FLL, ret:%d.\n", ret);
-			break;
-		} 
-#endif
-		if (loops && (l >= loops))
+
+		if (fllpipe.status == STAGE_ABRT)
 			break;
 	};
-terminate:
-	printf("camara %d: %s.\n", camera_params.vididx, camera_params.name);
-	pipeline_teardown(&fllpipe);
+
 	clock_gettime(CLOCK_MONOTONIC, &stop_time);
 	timespec_substract(&duration, &stop_time, &start_time);
-	printf("duration->  %lds %ldns .\n", duration.tv_sec , duration.tv_nsec );
+	printf("duration->  %lds %ldns .\n", duration.tv_sec , duration.tv_nsec);
 
-	printf("press a key to continue\n");
-	ch = getchar();
-	if (ch)
-		goto exitfll;
-exitfll:
+terminate:
+	free(camera_params.name);
+	pipeline_teardown(&fllpipe);
+
 	return 0;
 }

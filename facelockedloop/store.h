@@ -8,6 +8,9 @@ extern "C" {
 #include <time.h>
 
 struct store_box {
+	/* if there is no coordinates, request a scan*/
+	int scan;
+	/* boundix box coordinates */
 	int ptA_x;
 	int ptA_y;
 	int ptB_x;

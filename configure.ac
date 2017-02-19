@@ -52,7 +52,7 @@ AC_DEFINE_UNQUOTED(FLL_HOST_STRING,"$host",[Host system alias])
 FLL_HOST_STRING="$host"
 AC_DEFINE_UNQUOTED(FLL_COMPILER,"`$CC -v 2>&1 | tail -n 1`",[Compiler])
 
-AM_INIT_AUTOMAKE([1.15 foreign])
+AM_INIT_AUTOMAKE([1.14 foreign])
 AM_MAINTAINER_MODE
 AC_PROG_LIBTOOL
 
@@ -72,6 +72,9 @@ case "$build_for" in
 	;;
  i*86*-*)
 	target_arch=x86_32
+	;;
+ aarch64-unknown-*)
+	target_arch=arm64
 	;;
  *) echo ""
    echo "*******************************************"
@@ -195,12 +198,7 @@ if test x"$docdir" = x; then
 	docdir=$datadir/doc/$PACKAGE-$VERSION
 fi
 AC_SUBST(docdir)
-
-if test \! -d $srcdir/doc ; then
-    unset FLL_MAYBE_DOCDIR
-else
-    FLL_MAYBE_DOCDIR=doc
-fi
+unset FLL_MAYBE_DOCDIR
 AC_SUBST(FLL_MAYBE_DOCDIR)
 
 AC_MSG_CHECKING(for Doxygen doc generation)
@@ -369,26 +367,5 @@ AC_CONFIG_FILES([ \
 	servolib/Makefile \
 	facelockedloop/Makefile \
 	])
-
-if test \! x$FLL_MAYBE_DOCDIR = x ; then
-      AC_CONFIG_FILES([ \
-	doc/Makefile \
-	doc/doxygen/Makefile \
-	doc/doxygen/Doxyfile-common \
-	doc/doxygen/Doxyfile-html \
-	doc/doxygen/Doxyfile-pdf \
-        ])
-dnl	doc/docbook/Makefile \
-dnl	doc/docbook/catalog \
-dnl	doc/docbook/custom-stylesheets/Makefile \
-dnl	doc/docbook/custom-stylesheets/xsl/Makefile \
-dnl	doc/docbook/custom-stylesheets/xsl/common/Makefile \
-dnl	doc/docbook/custom-stylesheets/xsl/fo/Makefile \
-dnl	doc/docbook/custom-stylesheets/xsl/html/Makefile \
-dnl	doc/docbook/custom-stylesheets/xsl/html/chunk.xsl \
-dnl	doc/docbook/custom-stylesheets/xsl/html/onechunk.xsl \
-dnl	doc/docbook/fll/Makefile \
-dnl      ])
-fi
 
 AC_OUTPUT()

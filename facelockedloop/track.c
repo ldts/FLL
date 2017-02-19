@@ -1,467 +1,407 @@
-/**
- * @file facelockedloop/track.c
- * @brief Face tracking stage, based on fll's servolib library/
- * 
- * @author Raquel Medina <raquel.medina.rodriguez@gmail.com>
- *
- */
+#include <termios.h>
+#include <fcntl.h>
+#include <netdb.h>
 #include <errno.h>
 #include <stdio.h>
 #include <malloc.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
 
-#include "track.h"
-#include "servolib.h"
 #include "kernel_utils.h"
+#include "time_utils.h"
+#include "servolib.h"
+#include "track.h"
 
-#define ZONES_N 10
-#define PtA_MIDDLE_ZONE 4
-#define PtB_MIDDLE_ZONE 5
-#define Pt_x_MIDDLE 320
-#define Pt_y_MIDDLE 240
-#define PAN_STEP_PIXELS 64
-#define TILT_STEP_PIXELS 48
-const int pan_zones[] = {0, 64, 128, 192, 256, 320, 384, 448, 512, 576};
-const int tilt_zones[] = {0, 48, 96, 144, 192, 240, 288, 336, 384, 432};  
+#define FRAME_WIDTH	680
+#define FRAME_HEIGHT	480
 
-static void track_stage_up(struct stage *stg, struct stage_params *p,
-			     struct stage_ops *o,struct pipeline *pipe);
-static void track_stage_down(struct stage *stg);
-static int track_stage_run(struct stage *stg);
-static void track_stage_wait(struct stage *stg);
-static void track_stage_go(struct stage *stg);
-static int track_stage_input(struct stage *stg, void** it);
-static int track_map_inframe_shift_to_servo_pos(int ispanservo, int ifshift,
-						int servo_cpos);
+static sem_t lock;
 
-static struct stage_ops track_ops = {
-	.up = track_stage_up, 
-	.down = track_stage_down,
-	.run = track_stage_run,
-	.wait = track_stage_wait,
-	.go = track_stage_go,
-	.input = track_stage_input,
-};
-
-static void track_stage_up(struct stage *stg, struct stage_params *p,
+static
+void track_stage_up(struct stage *stg, struct stage_params *p,
 			     struct stage_ops *o,struct pipeline *pipe)
 {
 	stage_up(stg, p, o, pipe);
 	pipeline_register(pipe, stg);
-	
 }
 
-static void track_stage_down(struct stage *stg)
+static
+void track_stage_down(struct stage *stg)
 {
-	struct tracker *tracer;
-
-	tracer = container_of(stg, struct tracker, step);
-	track_teardown(tracer);
-	stage_down(stg);
+ 	stage_down(stg);
 	pipeline_deregister(stg->pipeline, stg);
 }
 
-static int track_stage_run(struct stage *stg)
+static
+int track_stage_input(struct stage *stg, void **it)
 {
-	struct tracker *tracer;
-	int ret;
-	
-	tracer = container_of(stg, struct tracker, step);
-	if (!tracer)
-		return -EINVAL;
-	
-	ret =track_run(tracer);
-	stg->stats.ofinterest = track_get_max_abse(tracer);
+	struct tracker *tracer  = container_of(stg, struct tracker, step);
+	void *itin;
 
-	return ret;
-	
-}
-
-static void track_stage_wait(struct stage *stg)
-{
-	stage_wait(stg);
-}
-
-static void track_stage_go(struct stage *stg)
-{
-	stage_go(stg);
-}
-
-static int track_stage_input(struct stage *stg, void **it)
-{
-	void *itin = NULL;
-	struct tracker *tracer;
-
-	tracer = container_of(stg, struct tracker, step);
 	stage_input(stg, &itin);
+	tracer->params.bbox  = (struct store_box*) itin;
 
-	tracer->params.bbox.ptA_x = ((struct store_box*)itin)->ptA_x;
-	tracer->params.bbox.ptA_y = ((struct store_box*)itin)->ptA_y;
-	tracer->params.bbox.ptB_x = ((struct store_box*)itin)->ptB_x;
-	tracer->params.bbox.ptB_y = ((struct store_box*)itin)->ptB_y;
-	
 	return 0;
 }
 
-int track_initialize(struct tracker *t, struct tracker_params *p,
-		     struct pipeline *pipe)
-{
-  	struct stage_params stgparams;
-	int ret;
-
-	stgparams.nth_stage = TRACKING_STAGE;
-	stgparams.data_in = NULL;
-	stgparams.data_out = NULL;
-	p->pan_params.home_position = HOME_POSITION_QUARTER_US;
-	p->tilt_params.home_position = HOME_POSITION_QUARTER_US;
-
-	t->params = *p;
-	ret = servoio_all_go_home(t->params.dev);
-	if (ret < 0)
-		printf("%s home error %d.\n", __func__, ret);
-
-	t->params.pan_tgt = HOME_POSITION_QUARTER_US;
-	ret = servoio_set_pulse(t->params.dev,
-				t->params.pan_params.channel,
-				t->params.pan_tgt);
-
-	p->pan_params.position =
-		servoio_get_position(p->dev,
-				     p->pan_params.channel);
-	printf("%s pan pos %d home %d.\n", __func__, p->pan_params.position,
-		p->pan_params.home_position);
-	t->stats.pan_stats.cmdstally[SERVOIO_READ] = 1;
-
-	t->params.tilt_tgt = HOME_POSITION_QUARTER_US;
-	ret = servoio_set_pulse(t->params.dev,
-				t->params.tilt_params.channel,
-				t->params.tilt_tgt);
-
-	p->tilt_params.position = servoio_get_position(p->dev,
-						       p->tilt_params.channel);
-	printf("%s tilt pos %d home %d.\n", __func__, p->tilt_params.position,
-		p->tilt_params.home_position);
-	t->stats.pan_stats.cmdstally[SERVOIO_WRITE] = 1;
-
-	track_stage_up(&t->step, &stgparams, &track_ops, pipe);
-	return ret;
-	
-}
-
-void track_teardown(struct tracker *t)
-{
-	int ret;
-	
-	ret = servoio_all_go_home(t->params.dev);
-	if (ret < 0)
-		printf("%s home error %d.\n", __func__, ret);
-
-	ret = servoio_configure(t->params.dev,
-				t->params.pan_params.channel,
-				HOME_POSITION_QUARTER_US, 0, 0);
-	if (ret < 0)
-		printf("%s stopping pan servo failed %d.\n", __func__, ret);
-
-	ret = servoio_configure(t->params.dev,
-				t->params.tilt_params.channel,
-				HOME_POSITION_QUARTER_US, 0, 0);
-	if (ret < 0)
-		printf("%s stopping tilt servo failed %d.\n", __func__, ret);
-
-	t->params.pan_params.position =
-		servoio_get_position(t->params.dev,
-				     t->params.pan_params.channel);
-	printf("%s pan pos %d home %d.\n", __func__,
-	       t->params.pan_params.position,
-	       t->params.pan_params.home_position);
-
-	t->params.tilt_params.position =
-		servoio_get_position(t->params.dev,
-				     t->params.tilt_params.channel);
-	printf("%s tilt pos %d home %d.\n", __func__,
-	       t->params.tilt_params.position,
-	       t->params.tilt_params.home_position);
-	
-}
-
-/*
- * 4000 0.25us => all the way left/up
- * 6000 0.25us => servo span middle/middle
- * 8000 0.25us => all the way right/down
+/**
+ * the _extremely_ simple servo decision algorithms:
  */
-static int track_map_inframe_shift_to_servo_pos(int is_panservo, int ifshift,
-						int servo_cpos)
+static
+int process_pan(int cpos, int delta, int bbox_center, int middle)
 {
-	/* positive pan_pskip => Pt < Center 
-	 *                    => face on left half of frame, 
-	 *		      => shift camera left to move Pt to the right
-	 *                    => reduce servo pulse value (take closer to 
-	 *                       lower pulse limit (4000 0.25us).
-	 * negative pan_pskip => Pt > Center
-	 *                    => face on right half of frame,
-	 *                    => shift camera right to move Pt to the left
-	 *                    => increment servo pulse value (take closer to
-	 *                       upper pulse limit (6000 0.25us).
-	 *
-	 * span of 4000 0.25us => 1000 camera positions from furthest left 
-	 *                        to furthest right.
-	 * positive tilt_pskip => Pt < Center 
-	 *                     => face on top half of frame, 
-	 *		       => shift camera up to move Pt down.
-	 *                     => reduce servo pulse value (take closer to 
-	 *                       lower pulse limit (4000 0.25us).
-	 * negative pan_pskip => Pt > Center
-	 *                    => face on bottom half of frame,
-	 *                    => shift camera down to move Pt to the top
-	 *                    => increment servo pulse value (take closer to
-	 *                       upper pulse limit (6000 0.25us).
-	 *
-	 * span of 4000 0.25us => 1000 camera positions from furthest top
-	 *                        to furthest bottom.
-	 *
-	 * 1 unit camera position move => new frame shifted 1 pixel.
-	 * 
-	 * servo => pulse span = 4000 0.25us pulse span; 
-	 *          min step: 4 0.25us
-	 *	    ==> position span = pulse span/min step = 
-	 *	                      = 4000 0.25us / 4 0.25us = 
-	 *			      = 1000 different positions.
-	 * 1 unit move in servo => at least 1 pixel difference in frame.
-	 * pan case:
-	 * 640 * 3 = 1920 pixels covered by pan servo: 
-	 *         => 1920 pixels/1000 positions 1.92 pixels change per pos.
-	 * tilt case:
-	 * 480 * 5 = 2400 pixels covered by tilt servo =>
-	 *         => 2400 pixels/1000 positions = 2.4 pixels change per pos.
-	 */
-	int servo_tgt;
-	const int pan_change_rate = 64;
-	const int tilt_change_rate = 64;
-	
-	if ((servo_cpos < 3700) ||
-	    (servo_cpos > SERVOLIB_MAX_PULSE_QUARTER_US)) {
-		printf("%s error servo_cpos %d .\n", __func__, servo_cpos);
-		sleep(1000);
-		return -EINVAL;
-	}
-	printf("%s pan_rate:%d, tilt_rate:%d.\n", __func__, pan_change_rate,
-	       tilt_change_rate);
-	
-	servo_tgt = is_panservo ?
-		servo_cpos + ifshift/pan_change_rate :
-		servo_cpos - ifshift/tilt_change_rate;
+	static int last_pan_delta = 0;
+	int duty;
 
-	if (is_panservo) {
-		if (ifshift < 0)
-			servo_tgt -= (servo_tgt % 256) ? (servo_tgt % 256) : 0;
-		else
-			servo_tgt += (servo_tgt % 256) ? 256 - (servo_tgt % 256) : 0;
-	} else {
-		if (ifshift < 0)
-			servo_tgt += (servo_tgt % 256) ? 256 - (servo_tgt % 256) : 0;
-		else
-			servo_tgt -= (servo_tgt % 256) ? (servo_tgt % 256) : 0;
+	if ( (last_pan_delta == delta) || delta < 50)  {
+		/* motor still moving or distance not significant */
+		printf("\tkeep current\n");
+		return cpos;
 	}
 
-	if (is_panservo) {	
-	
-		if (servo_tgt < SERVOLIB_MIN_PULSE_QUARTER_US)
-			servo_tgt = SERVOLIB_MIN_PULSE_QUARTER_US + 256;
-	
-		if (servo_tgt > SERVOLIB_MAX_PULSE_QUARTER_US)
-			servo_tgt = SERVOLIB_MAX_PULSE_QUARTER_US - 256;
+	last_pan_delta = delta;
+
+	switch (delta) {
+	case 51 ... 100:
+		duty = 5; break;
+	case 101 ... 200:
+		duty = 10; break;
+	case 201 ... FRAME_WIDTH/2:
+		duty = 15; break;
 	}
-	else {
-		if (servo_tgt < SERVOLIB_MIN_PULSE_QUARTER_US + 512)
-			servo_tgt = SERVOLIB_MIN_PULSE_QUARTER_US + 512;
-	
-		if (servo_tgt > SERVOLIB_MAX_PULSE_QUARTER_US - 512)
-			servo_tgt = SERVOLIB_MAX_PULSE_QUARTER_US - 512;
-	}
-	return servo_tgt;
+
+	if (bbox_center > middle) {
+		duty = duty * (-1);
+		printf("\tback\t[%3d, %3d]\n", cpos + duty, servoio_get_position(tilt_channel));
+
+	} else
+		printf("\tforward\t[%3d, %3d]\n", cpos + duty, servoio_get_position(tilt_channel));
+
+	return cpos + duty;
 }
 
-static int get_bbox_center(int ptB, int ptA)
+static
+int process_tilt(int cpos, int delta, int bbox_center, int middle)
 {
-	if (ptA > ptB)
-		return -EINVAL;
-	
-	return (((ptB - ptA) >> 1) + ptA);
+	static int last_tilt_delta = 0;
+	int duty;
+
+	if ((last_tilt_delta == delta) || delta < 30)  {
+		/* motor still moving or distance not significant */
+		printf("\tkeep current\n");
+		return cpos;
+	}
+
+	last_tilt_delta = delta;
+
+	switch (delta) {
+	case 31 ...  140:
+		duty = 5;
+		break;
+	case 141 ... 180:
+		duty = 10;
+		break;
+	case 181 ... FRAME_HEIGHT/2:
+		duty = 15;
+		 break;
+	}
+
+	if (bbox_center < middle) {
+		duty = duty * (-1);
+		printf("\tback\t[%3d, %3d]\n", servoio_get_position(pan_channel),  cpos + duty);
+	} else
+		printf("\tforward\t[%3d, %3d]\n", servoio_get_position(pan_channel),  cpos + duty);
+
+	return cpos + duty;
 }
 
-static int get_frame_pixel_shift(int ptM, int ptC)
+static
+int next_servo_position(enum servo_type servo, int channel, int bbox_center)
 {
-	return (ptM - ptC);
+	int middle = (servo == pan) ? FRAME_WIDTH/2 : FRAME_HEIGHT/2;
+	int delta = abs(bbox_center - middle);
+	int cpos;
+
+	printf("move\t%s", (servo == pan) ? "pan" : "tilt");
+	cpos = servoio_get_position(channel);
+	if (cpos < 0)
+		return -EIO;
+
+	if (servo == pan)
+		return process_pan(cpos, delta, bbox_center, middle);
+
+	return process_tilt(cpos, delta, bbox_center, middle);
 }
 
+static
+int bbox_center(int b, int a)
+{
+	return ((b - a) >> 1) + a;
+}
+
+static int
+scan_for_targets(struct tracker_params *p)
+{
+	static struct {
+		enum {fwd, bck} direction;
+		int skip;
+		int step;
+		int x;
+
+	} value = {
+		.direction = fwd,
+		.step = 1,
+		.skip = 0,
+		};
+
+	/* skip every other frame */
+	value.skip = ~value.skip;
+	if (value.skip)
+		return 0;
+
+	value.x = servoio_get_position(pan_channel);
+
+	if (value.direction == bck) {
+		if (value.x - (value.step - 1) > MIN_DUTY)
+				value.x -= value.step;
+		else {
+			value.direction = fwd;
+			value.x = MIN_DUTY;
+			goto done;
+		}
+	}
+
+	if (value.direction == fwd) {
+		if (value.x + (value.step - 1) < MAX_DUTY)
+			value.x += value.step;
+		else {
+			value.direction = bck;
+			value.x = MAX_DUTY;
+		}
+	}
+done:
+	printf("search\t[%d, %d]\n", value.x, servoio_get_position(tilt_channel));
+
+	return servoio_set_pulse(pan_channel, value.x);
+}
+
+static
 int track_run(struct tracker *t)
 {
-	int  d, e;
+	struct tracker_params *p = &t->params;
+	int x, y, npos;
 	int ret = 0;
-	int box_ptC_x, box_ptC_y;
-	int d_ptCptM = 0;
-	const int frame_ptM_x = 320;
-	const int frame_ptM_y = 240;
-	int count = 10;
-	
-	/* ptC: boundingbox center in current frame, 
-	 * frame points range: (0,0):(639,479)
-	 */
-	box_ptC_x = get_bbox_center(t->params.bbox.ptB_x, t->params.bbox.ptA_x);
-	if (box_ptC_x < 0) {
-		printf("%s: %d error %d.\n",
-		       __func__, __LINE__, box_ptC_x);
 
-		sleep(1000);
+	ret = sem_trywait(&lock);
+	if (ret < 0)
+		return 0;
+
+	if (p->bbox->scan) {
+		/* if a face was not detected after SCAN_WAIT_PERIOD, we initiate a
+		 *  camera scan sequence looking for targets: the camera will
+		 *  autonomously move to the left and right
+		 */
+		ret = scan_for_targets(p);
+		goto done;
+	}
+
+	/* a face was detected, now track it so it remains at the center of the screen */
+	x = bbox_center(p->bbox->ptB_x, p->bbox->ptA_x);
+	npos = next_servo_position(pan, p->pan_params.channel, x);
+	ret = servoio_set_pulse(p->pan_params.channel, npos);
+	if (ret < 0)
+		goto done;
+
+	y = bbox_center(p->bbox->ptB_y, p->bbox->ptA_y);
+	npos = next_servo_position(tilt, p->tilt_params.channel, y);
+	ret = servoio_set_pulse(p->tilt_params.channel, npos);
+	if (ret < 0)
+		goto done;
+done:
+	free(p->bbox);
+	sem_post(&lock);
+
+	return ret;
+}
+
+static
+int track_stage_run(struct stage *stg)
+{
+	struct tracker *tracer = container_of(stg, struct tracker, step);
+	static long last = 0;
+	struct timespec spec;
+	long current;
+
+	if (!tracer)
 		return -EINVAL;
-	}
-	
-	t->params.pan_params.position = servoio_get_position(t->params.dev, t->params.pan_params.channel);
-	++(t->stats.pan_stats.cmdstally[SERVOIO_READ]);
-	d_ptCptM = get_frame_pixel_shift(frame_ptM_x, box_ptC_x);
-	
-	/*same distance to be applied to all points in frame,
-	 * thus resulting in some pixels disappearing/moving forward  in
-	 *  new frame, or moving 
-	 * that distance  backwards / disappearing in new frame.
+
+	/* 650 msecs between motor moves:
+	 *
+	 * IMPORTANT
+	 * ---------
+	 *
+	 *  This value is a physical limit:
+	 *       - latency from motor request to pwm signal reaching the motor
+	 *       - latency for motor to reach its final position
+	 * This is required because we dont have a mechanism to read the motor
+	 * position with precision.
+	 *
+	 * This makes the video display lag but unfortunately cant do any better
+	 * with GPIO based PWM and slow motors
+	 *
 	 */
-	t->params.pan_tgt = track_map_inframe_shift_to_servo_pos(1, d_ptCptM, t->params.pan_params.position);
-	if (t->params.pan_tgt < 0) {
-		printf("%s: %d error .\n",  __func__, __LINE__);
-		sleep(1000);
-		return -EINVAL;
-	}
+	clock_gettime(CLOCK_REALTIME, &spec);
+	current = timespec_msecs(&spec);
+	if (current < last)
+		return 0;
 
-	printf("box_ptC_x=%d.\n", box_ptC_x);
-	printf("current pan pos: %d.\n", t->params.pan_params.position);
-	printf("pan_tgt:  %d .\n", t->params.pan_tgt);
+	last = timespec_msecs(&spec) + 650;
 
-retry:
-	d = servoio_get_position(t->params.dev, t->params.pan_params.channel);
-	if (d < 0) {
-		printf("%s: %d error %d.\n", __func__, __LINE__, d);
-		return -EIO;
-	}
-	else
-		printf("%s: %d pan = %d.\n", __func__, __LINE__, d);
+	return track_run(tracer);
+}
 
-	if (t->params.pan_params.position != t->params.pan_tgt) {
-		ret = servoio_set_pulse(t->params.dev, t->params.pan_params.channel, t->params.pan_tgt);
-		if (ret < 0) {
-			printf("%s: %d error %d.\n",  __func__, __LINE__,ret);
-			return -EIO;
+static
+void clear_screen(void)
+{
+	const char* cmd = "\e[1;1H\e[2J";
+
+	write(2, cmd, strlen(cmd));
+}
+
+static
+void print_config(void)
+{
+	printf("Use the UP/DOWN cursor keys to calibrate the servos\n");
+	printf("any other key to exit\n");
+	printf("\tpan  :\t\t%3d\n", servoio_get_position(pan_channel));
+	printf("\ttilt :\t\t%3d\n", servoio_get_position(tilt_channel));
+}
+
+static
+void *servo_ctrl(void *cookie)
+{
+	int id, duty, locked = 0;
+	char c;
+
+	for (;;) {
+		clear_screen();
+		print_config();
+
+		c = kbhit_irq();
+		if (!locked && (c == 'A' || c == 'B' || c == 'C' || c == 'D')) {
+			locked = 1;
+			sem_wait(&lock);
 		}
-		++(t->stats.pan_stats.cmdstally[SERVOIO_WRITE]);
-	}
-	
-	d = servoio_get_position(t->params.dev, t->params.pan_params.channel);
-	if (d < 0) {
-		printf("%s: %d error %d.\n", __func__, __LINE__, d);
-		sleep(1000);
-		return -EIO;
-	}
-	
-	++(t->stats.pan_stats.cmdstally[SERVOIO_READ]);	
-	e = t->params.pan_tgt - d;
-	if (e && t->params.pan_tgt != t->params.pan_params.position) {
-		printf("%s pan target: %d current %d err %d.\n", __func__,
-		       t->params.pan_tgt, d, e);
-
-			/* hack: remove this */
-			if (count--)
-				goto retry;
-	}
-
-	if (abs(t->params.pan_tgt-t->params.pan_params.position) > 300) 
-		sleep(100);
-
-	usleep(5000);
-	
-	if (e < t->stats.pan_stats.min_poserr)
-		t->stats.pan_stats.min_poserr = e;
-
-	if (e > t->stats.pan_stats.max_poserr)
-		t->stats.pan_stats.max_poserr = e;
-	t->stats.pan_stats.rt_err = e;
-	t->params.pan_params.poserr = e;
-	
-	t->params.pan_params.position = d;
-		
-	if (d < t->stats.pan_stats.min_pos)
-		t->stats.pan_stats.min_pos = d;
-
-	/* repeat same algorithm for tilt, make a function! */
-	box_ptC_y = (t->params.bbox.ptB_y - t->params.bbox.ptA_y) >> 1;
-	box_ptC_y += t->params.bbox.ptA_y;
-	printf("box_ptC_y=%d.\n", box_ptC_y);
-
-	count = 10;
-tilt:
-	
-	t->params.tilt_params.position = servoio_get_position(t->params.dev, t->params.tilt_params.channel);
-	++(t->stats.pan_stats.cmdstally[SERVOIO_READ]);
-
-	d_ptCptM = frame_ptM_y - box_ptC_y;
-
-	t->params.tilt_tgt = track_map_inframe_shift_to_servo_pos(0, d_ptCptM, t->params.tilt_params.position); 
-
-	printf("tilt_tgt:  %d .\n", t->params.tilt_tgt);
-	if (t->params.tilt_params.position != t->params.tilt_tgt) {
-		ret = servoio_set_pulse(t->params.dev,
-					t->params.tilt_params.channel,
-					t->params.tilt_tgt);
-		if (ret < 0) {
-			printf("%s error %d.\n", __func__, ret);
-			sleep(1000);
+		else if (locked && (c == 'X')) {
+			sem_post(&lock);
+			locked = 0;
+			continue;
 		}
-		++(t->stats.tilt_stats.cmdstally[SERVOIO_WRITE]);
+
+		if (c == 'C' || c == 'D') {
+			id = pan_channel;
+		} else {
+			id = tilt_channel;
+		}
+
+		duty = servoio_get_position(id);
+
+		switch(c) {
+		case 'A':
+		case 'C':
+			if (duty < MAX_DUTY)
+				servoio_set_pulse(id, duty + 1);
+			break;
+		case 'B':
+		case 'D':
+			if (duty > MIN_DUTY)
+				servoio_set_pulse(id, duty - 1);
+			break;
+		}
 	}
 
-	d = servoio_get_position(t->params.dev, t->params.tilt_params.channel);
-	++(t->stats.pan_stats.cmdstally[SERVOIO_READ]);
-	e = t->params.tilt_tgt - d;
+	return NULL;
+}
 
-	if (e) {
-		printf("%s tilt target: %d current %d err %d.\n", __func__, t->params.tilt_tgt, d, e);
+static
+int setup_sched_parameters(pthread_attr_t *attr, int prio)
+{
+	struct sched_param p;
+	int ret;
 
-			/* hack: remove this */
-			if (count--)
-				goto tilt;
-	}
+	ret = pthread_attr_init(attr);
+	if (ret)
+		return -1;
 
-	if (abs(t->params.tilt_tgt - t->params.tilt_params.position) > 300) 
-		sleep(100);
+	ret = pthread_attr_setinheritsched(attr, PTHREAD_EXPLICIT_SCHED);
+	if (ret)
+		return -1;
 
-	printf("%s tilt target: %d current %d err %d.\n", __func__,
-	       t->params.tilt_tgt, d, e);
-	
-	if (e < t->stats.tilt_stats.min_poserr)
-		t->stats.tilt_stats.min_poserr = e;
-	
-	if (e > t->stats.tilt_stats.max_poserr)
-		t->stats.tilt_stats.max_poserr = e;
-	
-	t->stats.tilt_stats.rt_err = e;
-	t->params.tilt_params.poserr = e;
-	t->params.tilt_params.position = d;
-	if (d < t->stats.tilt_stats.min_pos)
-		t->stats.tilt_stats.min_pos = d;
+	ret = pthread_attr_setschedpolicy(attr, prio ? SCHED_FIFO : SCHED_OTHER);
+	if (ret)
+		return -1;
+
+	p.sched_priority = prio;
+	ret = pthread_attr_setschedparam(attr, &p);
+	if (ret)
+		return -1;
 
 	return 0;
 }
 
+static
+struct stage_ops track_ops = {
+	.input = track_stage_input,
+	.down = track_stage_down,
+	.run = track_stage_run,
+	.up = track_stage_up,
+	.wait = stage_wait,
+	.go = stage_go,
 
-int track_get_max_abse(struct tracker *t)
+};
+
+int track_initialize(struct tracker *t, struct tracker_params *p, struct pipeline *pipe)
 {
-	int pabse, tabse;
-	pabse = abs(t->stats.pan_stats.rt_err);
-	tabse = abs(t->stats.tilt_stats.rt_err);
+  	struct stage_params stgparams = {
+		.nth_stage = TRACKING_STAGE,
+		.data_in = NULL,
+		.data_out = NULL,
+	};
+	pthread_attr_t tattr;
+	pthread_t ctrl;
+	int ret;
 
-	return ((abs(pabse) > abs(tabse))? pabse : tabse);
+	ret = servoio_init();
+	if (ret) {
+		printf("failed to initialize the servo io\n");
+		return -EIO;
+	}
+
+	ret = sem_init(&lock, 0, 1);
+	if (ret < 0) {
+		printf("track: failed to create lock\n");
+		return -EIO;
+	}
+
+	ret = setup_sched_parameters(&tattr, 0);
+	if (ret) {
+		printf("track: failed to set control task attr\n");
+		return -EIO;
+	}
+
+	/* control thread to manually drive the camera stopping the
+	 *  pipeline while doing it
+	 */
+	ret = pthread_create(&ctrl, &tattr, servo_ctrl, NULL);
+	if (ret) {
+		printf("track: failed to create control task\n");
+		return -EIO;
+	}
+
+	t->params = *p;
+	track_stage_up(&t->step, &stgparams, &track_ops, pipe);
+
+	return ret;
 }
 
-int track_print_stats(struct tracker *t)
-{
-	return 0;
-}
